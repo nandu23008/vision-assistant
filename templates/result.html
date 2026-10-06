@@ -1,0 +1,932 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+<title>Analysis Result - VisionGuide AI</title>
+
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>👁️</text></svg>">
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+
+</head>
+
+
+<body>
+
+
+<div class="container">
+
+
+<section class="hero">
+
+<span class="eyebrow-badge">✅ Analysis Complete</span>
+
+<h1>✨ VisionGuide AI</h1>
+
+<p>
+AI-generated description of your surroundings.
+</p>
+
+</section>
+
+
+
+
+
+<div class="result-card">
+
+
+
+{% if image_path %}
+
+<div style="text-align:center;">
+
+<img 
+src="{{ image_path }}"
+alt="Captured image"
+style="
+max-width:100%;
+max-height:400px;
+border-radius:12px;
+margin-bottom:20px;
+">
+
+</div>
+
+{% endif %}
+
+
+
+
+
+<h2>Scene Analysis</h2>
+
+
+
+
+<div class="description" id="descriptionText">
+
+
+{% if scene %}
+
+<p class="field field-scene">
+<strong>Scene:</strong>
+{{ scene }}
+</p>
+
+{% endif %}
+
+
+
+{% if objects %}
+
+<p class="field field-objects">
+<strong>Objects:</strong>
+{{ objects }}
+</p>
+
+{% endif %}
+
+
+
+{% if safety %}
+
+<p class="field field-safety">
+<strong>Safety:</strong>
+{{ safety }}
+</p>
+
+{% endif %}
+
+
+
+{% if action %}
+
+<p class="field field-action">
+<strong>Suggested Action:</strong>
+{{ action }}
+</p>
+
+{% endif %}
+
+
+</div>
+
+
+
+
+
+
+
+
+<div class="voice-box">
+
+
+<h3>🔊 Voice Assistance</h3>
+
+
+<div class="status-pill">
+
+<span id="speechStatusDot" class="status-dot dot-idle"></span>
+
+<p id="speechStatus" role="status" aria-live="polite">
+
+Preparing voice assistance...
+
+</p>
+
+</div>
+
+
+
+<div id="equalizer" class="equalizer" aria-hidden="true">
+
+<span></span><span></span><span></span><span></span><span></span>
+
+</div>
+
+
+
+
+<div class="actions">
+
+
+<button onclick="speakText()">
+🔄 Read Again
+</button>
+
+
+<button onclick="pauseText()">
+⏸ Pause
+</button>
+
+
+<button onclick="resumeText()">
+▶ Resume
+</button>
+
+
+<button onclick="stopText()">
+⏹ Stop
+</button>
+
+
+</div>
+
+
+
+</div>
+
+
+
+
+
+
+<div class="actions">
+
+<a href="/" class="button-link">
+📷 Analyse Another Image
+</a>
+
+</div>
+
+
+
+</div>
+
+
+</div>
+
+
+
+
+
+
+
+
+
+<script>
+
+
+let recognition = null;
+
+let currentUtterance = null;
+
+let listening = false;
+
+let wakeLock = null;
+
+
+let speechStatusEl =
+document.getElementById("speechStatus");
+
+
+let speechStatusDot =
+document.getElementById("speechStatusDot");
+
+
+let equalizerEl =
+document.getElementById("equalizer");
+
+
+// Reads the current speech-status text and picks a dot color.
+// Purely observational -- doesn't touch any of the existing
+// status.innerText / speechStatus.innerText lines elsewhere.
+function classifySpeechStatus(text){
+
+
+text = text.toLowerCase();
+
+
+
+if(
+text.includes("reading") ||
+text.includes("speaking")
+){
+
+return "dot-speaking";
+
+}
+
+
+
+if(
+text.includes("listening")
+){
+
+return "dot-listening";
+
+}
+
+
+
+if(
+text.includes("paused") ||
+text.includes("stopped")
+){
+
+return "dot-error";
+
+}
+
+
+
+return "dot-idle";
+
+
+}
+
+
+
+
+if(speechStatusDot && speechStatusEl){
+
+
+let speechStatusObserver =
+new MutationObserver(
+function(){
+
+
+speechStatusDot.className =
+"status-dot " +
+classifySpeechStatus(
+speechStatusEl.innerText
+);
+
+
+document.title =
+"VisionGuide – " +
+(
+speechStatusEl.innerText.length > 30 ?
+speechStatusEl.innerText.slice(0, 30) + "..." :
+speechStatusEl.innerText
+);
+
+
+}
+);
+
+
+
+speechStatusObserver.observe(
+
+speechStatusEl,
+
+{
+
+characterData: true,
+
+childList: true,
+
+subtree: true
+
+}
+
+);
+
+
+}
+
+
+
+
+
+
+
+// -------------------------
+// Screen Wake Lock
+// (keeps the phone from sleeping/throttling timers
+// so mic restarts keep firing reliably)
+// -------------------------
+
+
+async function requestWakeLock(){
+
+
+try{
+
+
+if("wakeLock" in navigator){
+
+
+wakeLock =
+await navigator.wakeLock.request("screen");
+
+
+
+wakeLock.addEventListener(
+"release",
+function(){
+console.log("Wake lock released");
+}
+);
+
+
+}
+
+
+}
+
+
+catch(e){
+
+
+console.log(
+"Wake lock error:",
+e
+);
+
+
+}
+
+
+}
+
+
+
+
+
+
+
+document.addEventListener(
+"visibilitychange",
+async function(){
+
+
+if(
+wakeLock !== null &&
+document.visibilityState === "visible"
+){
+
+
+await requestWakeLock();
+
+
+}
+
+
+}
+);
+
+
+
+
+
+
+
+
+
+function getFullText(){
+
+
+return document
+.getElementById("descriptionText")
+.innerText
+.trim();
+
+
+}
+
+
+
+
+
+
+
+
+
+function speakText(){
+
+
+let text =
+    getFullText() +
+    ". Finished. Say describe for another image.";
+
+
+if(!text)
+return;
+
+
+
+speechSynthesis.cancel();
+
+
+
+currentUtterance =
+new SpeechSynthesisUtterance(text);
+
+
+
+currentUtterance.rate = 0.9;
+
+currentUtterance.pitch = 1;
+
+
+
+
+let status =
+document.getElementById("speechStatus");
+
+
+
+
+
+currentUtterance.onstart = function(){
+
+
+status.innerText =
+"🔊 Reading aloud...";
+
+
+stopListening();
+
+
+if(equalizerEl){
+
+
+equalizerEl.classList.add("active");
+
+
+}
+
+
+};
+
+
+
+
+
+
+currentUtterance.onend = function(){
+
+
+status.innerText =
+'✅ Finished. Say "describe" for another image.';
+
+
+if(equalizerEl){
+
+
+equalizerEl.classList.remove("active");
+
+
+}
+
+
+
+setTimeout(
+startListening,
+1500
+);
+
+
+
+};
+
+
+
+
+
+
+speechSynthesis.speak(
+currentUtterance
+);
+
+
+
+}
+
+
+
+
+
+
+
+
+
+function pauseText(){
+
+
+if(
+speechSynthesis.speaking &&
+!speechSynthesis.paused
+){
+
+
+speechSynthesis.pause();
+
+
+
+document.getElementById(
+"speechStatus"
+).innerText =
+"⏸ Speech paused.";
+
+
+}
+
+
+
+}
+
+
+
+
+
+
+
+
+
+function resumeText(){
+
+
+if(
+speechSynthesis.paused
+){
+
+
+speechSynthesis.resume();
+
+
+
+document.getElementById(
+"speechStatus"
+).innerText =
+"🔊 Resuming speech.";
+
+
+}
+
+
+
+}
+
+
+
+
+
+
+
+
+
+function stopText(){
+
+
+speechSynthesis.cancel();
+
+
+
+document.getElementById(
+"speechStatus"
+).innerText =
+'⏹ Stopped. Say "describe" for another image.';
+
+
+
+setTimeout(
+startListening,
+1000
+);
+
+
+
+}
+
+
+
+
+
+
+
+
+
+function startListening(){
+
+
+if(listening)
+return;
+
+
+
+const SpeechRecognition =
+
+window.SpeechRecognition ||
+window.webkitSpeechRecognition;
+
+
+
+
+if(!SpeechRecognition)
+return;
+
+
+
+
+
+recognition =
+new SpeechRecognition();
+
+
+
+recognition.lang =
+"en-US";
+
+
+recognition.continuous =
+true;
+
+
+recognition.interimResults =
+false;
+
+
+
+listening = true;
+
+
+
+document.getElementById(
+"speechStatus"
+).innerText =
+'🎤 Listening. Say "describe".';
+
+
+
+
+
+recognition.onresult =
+function(event){
+
+
+let text =
+event.results[
+event.results.length-1
+][0]
+.transcript
+.toLowerCase();
+
+
+
+console.log(
+"heard:",
+text
+);
+
+
+
+
+if(
+text.includes("describe")
+){
+
+
+stopListening();
+
+
+
+window.location.href="/?auto=1";
+
+
+}
+
+
+
+// "Repeat that" / "read again" / "say it again" -- re-reads the
+// current description out loud without leaving this page or
+// capturing a new photo. Uses the same speakText() function the
+// "Read Again" button already calls, so behavior stays identical.
+
+else if(
+text.includes("repeat") ||
+text.includes("again") ||
+text.includes("read that")
+){
+
+
+speakText();
+
+
+}
+
+
+
+};
+
+
+
+
+
+
+
+recognition.onerror =
+function(){
+
+
+listening=false;
+
+
+
+setTimeout(
+startListening,
+1000
+);
+
+
+};
+
+
+
+
+
+recognition.onend =
+function(){
+
+
+listening=false;
+
+
+
+if(!speechSynthesis.speaking)
+{
+
+
+setTimeout(
+startListening,
+1000
+);
+
+
+}
+
+
+
+};
+
+
+
+
+
+recognition.start();
+
+
+
+}
+
+
+
+
+
+
+
+
+
+function stopListening(){
+
+
+if(
+recognition
+){
+
+
+recognition.stop();
+
+
+recognition=null;
+
+
+}
+
+
+
+listening=false;
+
+
+
+}
+
+
+
+
+
+
+
+
+
+window.onload=function(){
+
+
+requestWakeLock();
+
+
+
+// Double pulse (different from the single pulse used when a
+// photo is captured) so a user can tell by feel alone that a
+// new result has finished loading and is about to be read out.
+if("vibrate" in navigator){
+
+
+navigator.vibrate(
+
+[100, 60, 100]
+
+);
+
+
+}
+
+
+
+speakText();
+
+
+};
+
+
+
+
+
+
+
+
+window.onbeforeunload=function(){
+
+
+if(
+wakeLock
+){
+
+
+wakeLock.release();
+
+
+wakeLock = null;
+
+
+}
+
+
+
+speechSynthesis.cancel();
+
+
+stopListening();
+
+
+};
+
+
+</script>
+
+
+
+</body>
+
+</html>

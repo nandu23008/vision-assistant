@@ -1,0 +1,1366 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+<title>VisionGuide AI</title>
+
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>👁️</text></svg>">
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+
+</head>
+
+
+<body>
+
+
+<div class="container">
+
+
+<section class="hero">
+
+<span class="eyebrow-badge">⚡ Powered by Groq AI · Built for accessibility</span>
+
+<h1>✨ VisionGuide AI</h1>
+
+<p>
+Hands-free AI vision assistance for visually impaired users.
+Say "describe" to understand your surroundings.
+</p>
+
+</section>
+
+
+
+
+
+<section class="features">
+
+
+<div class="card">
+
+<h3>👁️ Scene Understanding</h3>
+
+<p>
+AI identifies important objects and surroundings.
+</p>
+
+</div>
+
+
+
+<div class="card">
+
+<h3>🔊 Voice Assistance</h3>
+
+<p>
+Descriptions are automatically spoken aloud.
+</p>
+
+</div>
+
+
+
+<div class="card">
+
+<h3>🎤 Hands-Free Mode</h3>
+
+<p>
+Simply say "describe" to analyse your surroundings.
+</p>
+
+</div>
+
+
+</section>
+
+
+
+
+
+
+
+<section class="upload-box">
+
+
+<h2>VisionGuide Camera</h2>
+
+
+
+<video 
+id="camera"
+width="320"
+height="240"
+autoplay
+playsinline
+style="
+border-radius:15px;
+display:block;
+margin:20px auto;
+background:black;
+">
+</video>
+
+
+
+<canvas id="canvas" style="display:none;"></canvas>
+
+
+
+
+
+<div class="status-pill">
+
+<span id="statusDot" class="status-dot dot-idle"></span>
+
+<p id="status" class="note" role="status" aria-live="polite">
+
+Starting VisionGuide...
+
+</p>
+
+</div>
+
+
+
+<!--
+  Manual fallback control. Voice ("say describe") is the primary
+  way to trigger a capture, but Web Speech Recognition isn't
+  supported everywhere (notably iOS Safari), and mic access can
+  fail or mishear in noisy environments. This button calls the
+  exact same captureImage() function the voice path uses, so it's
+  never out of sync with what "describe" already does. It starts
+  disabled and is enabled once the camera actually has a frame
+  ready, so it can't be tapped before there's anything to capture.
+-->
+
+<button
+id="manualCaptureBtn"
+type="button"
+disabled
+style="margin-top:15px;"
+aria-label="Describe my surroundings now">
+
+📷 Describe Now
+
+</button>
+
+
+
+<div id="equalizer" class="equalizer" aria-hidden="true">
+
+<span></span><span></span><span></span><span></span><span></span>
+
+</div>
+
+
+
+
+
+<!-- Hidden form -->
+
+<form 
+id="cameraForm"
+action="/describe"
+method="POST"
+enctype="multipart/form-data"
+style="display:none;">
+
+
+<input 
+    type="file"
+    id="cameraInput"
+    name="image"
+    accept="image/*"
+    capture="environment">
+
+
+</form>
+
+
+
+</section>
+
+
+</div>
+
+
+
+
+
+
+
+<div id="loadingOverlay">
+
+
+<div class="loading-box">
+
+
+<div class="spinner"></div>
+
+
+<h2>🤖 VisionGuide AI</h2>
+
+
+<p>
+Analysing surroundings...
+</p>
+
+
+</div>
+
+
+</div>
+
+
+
+
+
+
+
+
+
+<script>
+
+
+let video =
+document.getElementById("camera");
+
+
+let canvas =
+document.getElementById("canvas");
+
+
+let status =
+document.getElementById("status");
+
+
+let statusDot =
+document.getElementById("statusDot");
+
+
+// Reads the current status text and picks a dot color for it.
+// This never touches the existing status.innerText = "..." lines
+// below — it just watches for changes and reacts to them.
+function classifyStatus(text){
+
+
+text = text.toLowerCase();
+
+
+
+if(
+text.includes("capturing") ||
+text.includes("analysing") ||
+text.includes("analyzing") ||
+text.includes("describe detected")
+){
+
+return "dot-capturing";
+
+}
+
+
+
+if(
+text.includes("denied") ||
+text.includes("unavailable") ||
+text.includes("error")
+){
+
+return "dot-error";
+
+}
+
+
+
+if(
+text.includes("listening")
+){
+
+return "dot-listening";
+
+}
+
+
+
+return "dot-idle";
+
+
+}
+
+
+
+
+if(statusDot && status){
+
+
+let statusObserver =
+new MutationObserver(
+function(){
+
+
+statusDot.className =
+"status-dot " +
+classifyStatus(status.innerText);
+
+
+document.title =
+"VisionGuide – " +
+(
+status.innerText.length > 30 ?
+status.innerText.slice(0, 30) + "..." :
+status.innerText
+);
+
+
+}
+);
+
+
+
+statusObserver.observe(
+
+status,
+
+{
+
+characterData: true,
+
+childList: true,
+
+subtree: true
+
+}
+
+);
+
+
+}
+
+
+let stream;
+
+
+let recognition = null;
+
+let listening = false;
+
+let capturing = false;
+
+let wakeLock = null;
+
+
+// Manual fallback control -- see the comment on the button in the
+// HTML for why this exists. Guarded with `if(manualCaptureBtn)` so
+// this can never throw even if the button is ever removed/renamed.
+let manualCaptureBtn =
+document.getElementById("manualCaptureBtn");
+
+
+let equalizerEl =
+document.getElementById("equalizer");
+
+
+if(manualCaptureBtn){
+
+
+manualCaptureBtn.addEventListener(
+"click",
+function(){
+
+
+if(!capturing){
+
+
+captureImage();
+
+
+}
+
+
+}
+);
+
+
+}
+
+
+// If we were sent here from the result page (user already said
+// "describe" once to move on), skip the "say describe" step
+// entirely and capture as soon as the camera has a frame ready.
+let autoCapture =
+new URLSearchParams(window.location.search).get("auto") === "1";
+
+
+function proceedAfterCameraReady(){
+
+
+// The manual button is disabled in the HTML until there's an
+// actual frame to capture. This enables it the moment the video
+// is ready, independent of whether we're auto-capturing or
+// waiting to hear "describe".
+waitForVideoReady().then(
+function(){
+
+
+if(manualCaptureBtn){
+
+
+manualCaptureBtn.disabled = false;
+
+
+}
+
+
+}
+);
+
+
+
+if(autoCapture){
+
+
+status.innerText =
+"Capturing surroundings...";
+
+
+
+speak(
+"Capturing surroundings."
+);
+
+
+
+waitForVideoReady().then(
+function(){
+
+
+setTimeout(
+captureImage,
+600
+);
+
+
+}
+);
+
+
+}
+
+else{
+
+
+setTimeout(
+startListening,
+3000
+);
+
+
+}
+
+
+}
+
+
+
+function waitForVideoReady(){
+
+
+return new Promise(function(resolve){
+
+
+if(
+video.readyState >= 2 &&
+video.videoWidth > 0
+){
+
+
+resolve();
+
+
+}
+
+else{
+
+
+let onLoaded = function(){
+
+
+video.removeEventListener(
+"loadeddata",
+onLoaded
+);
+
+
+resolve();
+
+
+};
+
+
+
+video.addEventListener(
+"loadeddata",
+onLoaded
+);
+
+
+}
+
+
+});
+
+
+}
+
+
+
+
+
+
+
+// -------------------------
+// Screen Wake Lock
+// (keeps the phone from sleeping/throttling timers
+// so mic restarts keep firing reliably)
+// -------------------------
+
+
+async function requestWakeLock(){
+
+
+try{
+
+
+if("wakeLock" in navigator){
+
+
+wakeLock =
+await navigator.wakeLock.request("screen");
+
+
+
+wakeLock.addEventListener(
+"release",
+function(){
+console.log("Wake lock released");
+}
+);
+
+
+}
+
+
+}
+
+
+catch(e){
+
+
+console.log(
+"Wake lock error:",
+e
+);
+
+
+}
+
+
+}
+
+
+
+
+
+
+
+document.addEventListener(
+"visibilitychange",
+async function(){
+
+
+if(
+wakeLock !== null &&
+document.visibilityState === "visible"
+){
+
+
+await requestWakeLock();
+
+
+}
+
+
+}
+);
+
+
+
+
+
+
+
+
+
+// -------------------------
+// Start camera automatically
+// -------------------------
+
+
+async function startCamera(){
+
+
+try{
+
+
+stream =
+await navigator.mediaDevices.getUserMedia({
+
+video: {
+    facingMode: { ideal: "environment" }
+}
+
+});
+
+
+
+video.srcObject = stream;
+
+
+
+status.innerText =
+"Camera ready. Say describe.";
+
+
+
+
+
+if(!autoCapture){
+
+
+speak(
+"VisionGuide ready. Say describe to analyse your surroundings."
+);
+
+
+}
+
+
+
+requestWakeLock();
+
+
+
+proceedAfterCameraReady();
+
+
+
+}
+
+
+
+catch(error){
+
+
+console.log(
+"Environment camera failed, falling back:",
+error
+);
+
+
+
+try{
+
+
+stream =
+await navigator.mediaDevices.getUserMedia({
+
+video:true
+
+});
+
+
+
+video.srcObject = stream;
+
+
+
+status.innerText =
+"Camera ready (fallback). Say describe.";
+
+
+
+if(!autoCapture){
+
+
+speak(
+"VisionGuide ready. Say describe to analyse your surroundings."
+);
+
+
+}
+
+
+
+requestWakeLock();
+
+
+
+proceedAfterCameraReady();
+
+
+}
+
+
+
+catch(fallbackError){
+
+
+console.log(fallbackError);
+
+
+status.innerText =
+"Camera permission denied.";
+
+
+speak(
+"Camera permission is required."
+);
+
+
+}
+
+
+}
+
+
+
+}
+
+
+
+
+
+
+
+
+
+// -------------------------
+// Text to speech helper
+// -------------------------
+
+
+function speak(text){
+
+
+if(
+'speechSynthesis'
+in window
+){
+
+
+speechSynthesis.cancel();
+
+
+
+let utterance =
+new SpeechSynthesisUtterance(text);
+
+
+utterance.rate = 0.9;
+
+
+
+utterance.onstart = function(){
+
+
+if(equalizerEl){
+
+
+equalizerEl.classList.add("active");
+
+
+}
+
+
+};
+
+
+
+utterance.onend = function(){
+
+
+if(equalizerEl){
+
+
+equalizerEl.classList.remove("active");
+
+
+}
+
+
+};
+
+
+
+speechSynthesis.speak(
+utterance
+);
+
+
+}
+
+
+}
+
+
+
+
+
+
+
+
+
+// -------------------------
+// Capture image
+// -------------------------
+
+
+function captureImage(){
+
+
+
+capturing = true;
+
+
+
+stopListening();
+
+
+
+// Quick single pulse so a user gets physical confirmation that
+// the photo was taken, even before speech/status text catches up.
+// Wrapped in a feature check -- if the device/browser doesn't
+// support vibration, this line is simply ignored.
+if("vibrate" in navigator){
+
+
+navigator.vibrate(120);
+
+
+}
+
+
+
+status.innerText =
+"Capturing image...";
+
+
+
+document
+.getElementById("loadingOverlay")
+.style.display="flex";
+
+
+
+
+
+let context =
+canvas.getContext("2d");
+
+
+
+// Cap the longest side of the captured image so the
+// base64 payload (and Groq token usage) stays small.
+// Vision models don't need full camera resolution to
+// read a scene, and this is what was blowing past the
+// per-minute token limit.
+
+let MAX_DIMENSION = 640;
+
+
+
+let sourceWidth =
+video.videoWidth;
+
+
+let sourceHeight =
+video.videoHeight;
+
+
+
+let scale =
+Math.min(
+
+1,
+
+MAX_DIMENSION /
+Math.max(sourceWidth, sourceHeight)
+
+);
+
+
+
+canvas.width =
+Math.round(sourceWidth * scale);
+
+
+canvas.height =
+Math.round(sourceHeight * scale);
+
+
+
+
+context.drawImage(
+
+video,
+
+0,
+
+0,
+
+canvas.width,
+
+canvas.height
+
+);
+
+
+
+
+
+
+
+canvas.toBlob(
+
+function(blob){
+
+
+
+let file =
+new File(
+
+[blob],
+
+"camera_capture.jpg",
+
+{
+
+type:"image/jpeg"
+
+}
+
+);
+
+
+
+
+
+let data =
+new DataTransfer();
+
+
+data.items.add(file);
+
+
+
+document
+.getElementById("cameraInput")
+.files =
+data.files;
+
+
+
+
+
+document
+.getElementById("cameraForm")
+.submit();
+
+
+
+
+
+},
+
+
+"image/jpeg",
+
+
+0.7
+
+
+);
+
+
+
+}
+
+
+
+
+
+
+
+
+
+// -------------------------
+// Voice recognition
+// -------------------------
+
+
+function startListening(){
+
+
+
+if(
+listening ||
+capturing
+){
+
+
+return;
+
+
+}
+
+
+
+
+
+
+
+const SpeechRecognition =
+
+window.SpeechRecognition ||
+
+window.webkitSpeechRecognition;
+
+
+
+
+
+if(!SpeechRecognition){
+
+
+status.innerText =
+"Voice control unavailable on this browser. Tap the Describe Now button below.";
+
+
+
+speak(
+"Voice control is unavailable on this browser. Please tap the Describe Now button to analyse your surroundings."
+);
+
+
+
+return;
+
+
+}
+
+
+
+
+
+
+
+recognition =
+new SpeechRecognition();
+
+
+
+recognition.lang =
+"en-US";
+
+
+
+recognition.continuous =
+false;
+
+
+
+recognition.interimResults =
+false;
+
+
+
+listening = true;
+
+
+
+
+
+
+
+status.innerText =
+"Listening... Say describe";
+
+
+
+
+
+
+
+recognition.onresult =
+function(event){
+
+
+
+let text =
+
+event.results[0][0]
+.transcript
+.toLowerCase();
+
+
+
+
+console.log(
+
+"heard:",
+
+text
+
+);
+
+
+
+
+
+
+if(
+text.includes("describe")
+){
+
+
+
+status.innerText =
+"Describe detected.";
+
+
+
+speak(
+"Capturing surroundings."
+);
+
+
+
+setTimeout(
+
+captureImage,
+
+1500
+
+);
+
+
+
+}
+
+else{
+
+
+status.innerText =
+'Say "describe"';
+
+
+}
+
+
+
+};
+
+
+
+
+
+
+
+
+recognition.onerror =
+function(event){
+
+
+
+console.log(
+"Recognition error:",
+event.error
+);
+
+
+
+listening = false;
+
+
+
+if(!capturing){
+
+
+setTimeout(
+
+startListening,
+
+1000
+
+);
+
+
+}
+
+
+
+};
+
+
+
+
+
+
+
+
+// Fires on EVERY stop of recognition, whether it
+// ended because of a result, silence timeout, or
+// an OS/browser interruption. This is the single
+// place that guarantees listening resumes.
+
+recognition.onend =
+function(){
+
+
+
+listening = false;
+
+
+
+if(!capturing){
+
+
+setTimeout(
+
+startListening,
+
+1000
+
+);
+
+
+}
+
+
+
+};
+
+
+
+
+
+
+recognition.start();
+
+
+
+}
+
+
+
+
+
+
+
+
+
+function stopListening(){
+
+
+if(
+recognition
+){
+
+
+recognition.stop();
+
+
+recognition = null;
+
+
+}
+
+
+
+listening = false;
+
+
+
+}
+
+
+
+
+
+
+
+
+// Start everything
+
+window.onload =
+function(){
+
+
+startCamera();
+
+
+};
+
+
+
+
+
+
+
+
+window.onbeforeunload =
+function(){
+
+
+if(
+wakeLock
+){
+
+
+wakeLock.release();
+
+
+wakeLock = null;
+
+
+}
+
+
+
+stopListening();
+
+
+};
+
+
+
+
+
+</script>
+
+
+
+
+</body>
+
+</html>
